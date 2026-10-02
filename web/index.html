@@ -189,7 +189,9 @@ function renderOvpn() {
       return '<tr>' +
         '<td><code>' + esc(e.host) + ':' + esc(e.port) + '</code></td>' +
         '<td class="proto-' + proto + '">openvpn/' + proto + '</td>' +
-        '<td class="lat">' + (e.latency_ms != null ? esc(e.latency_ms) + ' ms' : '未检查') + '</td>' +
+        (e.latency_ms != null
+           ? '<td class="lat">' + esc(e.latency_ms) + ' ms</td>'
+           : '<td style="color:var(--muted)">未检查</td>') +
         '<td>' + badge(e.ip_type) + '</td></tr>';
     }).join('');
     return '<div class="country' + (ci === 0 ? ' open' : '') + '">' +
