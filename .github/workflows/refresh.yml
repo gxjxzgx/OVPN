@@ -7,7 +7,7 @@ name: Refresh and Deploy
 # 再刷新, 刷新失败则沿用旧文件, 避免部署时把订阅文件清掉。
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "0 */3 * * *"    # 每 3 小时整点运行一次
   workflow_dispatch:
 
 permissions:
