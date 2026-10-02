@@ -5,7 +5,9 @@ VPN Gate OpenVPN 节点自动提取。
 
 数据源 : http://www.vpngate.net/api/iphone/ (官方 CSV, 含 OpenVPN 配置 base64)
 流程   : 拉取 API -> 解码每个服务器的 OpenVPN 配置 -> 提取 remote 地址/端口/协议
-          -> 并发 TCP 检查端口可达性 -> 打包 openvpn.zip + 索引 openvpn.txt
+          -> 并发 TCP 检查端口可达性
+          -> 家宽(ISP)节点够多时剔除数据中心节点, 不够则连数据中心一起输出
+          -> 生成 openvpn.yaml (Clash 订阅) + openvpn.json (监控页数据)
 
 只用标准库, 无第三方依赖。
 
@@ -14,6 +16,8 @@ VPN Gate OpenVPN 节点自动提取。
   OVPN_WORKERS        选填, 并发线程数, 默认 32
   OVPN_MAX            选填, 最多保留 N 个 (0 = 全部), 默认 0 (按延迟优先截断)
   OVPN_KEEP_UDP       选填, UDP 节点无法做 TCP 检查, 1=不检查直接保留, 0=丢弃, 默认 1
+  OVPN_EXCLUDE_DC     选填, 1=ISP 节点足够时不输出数据中心节点 (public-vpn 前缀), 0=始终保留, 默认 1
+  OVPN_MIN_ISP        选填, ISP(家宽) 节点数 > 此值才剔除数据中心; 否则数据中心一并输出, 默认 20
   OUT_DIR             选填, 输出目录, 默认脚本所在目录
   VPNGATE_API         选填, 官方 API 地址
   VPNGATE_MIRROR      选填, 官方失败时的回退镜像
@@ -345,6 +349,8 @@ def main():
     workers = int(os.environ.get("OVPN_WORKERS", "32"))
     max_n = int(os.environ.get("OVPN_MAX", "0"))
     keep_udp = os.environ.get("OVPN_KEEP_UDP", "1") != "0"
+    exclude_dc = os.environ.get("OVPN_EXCLUDE_DC", "1") != "0"
+    min_isp = int(os.environ.get("OVPN_MIN_ISP", "20"))
     out_dir = os.environ.get("OUT_DIR", os.path.dirname(os.path.abspath(__file__)))
 
     log("== 1/3 拉取 VPN Gate 数据 ==")
@@ -359,6 +365,13 @@ def main():
     log(f"== 3/3 TCP 可达检查 (超时 {timeout}s, 并发 {workers}) ==")
     alive = check_nodes(nodes, timeout, workers, keep_udp)
     log(f"保留: {len(alive)}/{len(nodes)} (含未检查的 UDP 节点)" if keep_udp else f"可达: {len(alive)}/{len(nodes)}")
+    isp_n = sum(1 for n in alive if classify_ip_type(n.get("vg_host", "")) == "residential")
+    dc_n = sum(1 for n in alive if classify_ip_type(n.get("vg_host", "")) == "datacenter")
+    if exclude_dc and isp_n > min_isp:
+        alive = [n for n in alive if classify_ip_type(n.get("vg_host", "")) != "datacenter"]
+        log(f"ISP(家宽) 节点 {isp_n} 个 (> {min_isp}), 剔除数据中心节点 {dc_n} 个, 输出 {len(alive)} 个")
+    else:
+        log(f"ISP(家宽) 节点 {isp_n} 个 (未超过 {min_isp}) 或未启用剔除, 数据中心节点 {dc_n} 个一并输出, 共 {len(alive)} 个")
     if not alive:
         die("检查后剩余 0 个可用节点, 拒绝提交空结果")
     if max_n > 0:
