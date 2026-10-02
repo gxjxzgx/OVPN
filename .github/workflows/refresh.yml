@@ -59,6 +59,7 @@ jobs:
         env:
           OVPN_CHECK_TIMEOUT: "5"
           OVPN_WORKERS: "32"
+          OVPN_KEEP_UDP: "0"      # ← 加上这一行，UDP 节点直接丢弃
         run: python refresh_ovpn.py
 
       - name: Decide whether to refresh edge pool
