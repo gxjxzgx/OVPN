@@ -1,0 +1,123 @@
+name: Refresh and Deploy
+
+# 每 30 分钟运行一次:
+#  - OpenVPN 节点: 每次都刷新
+#  - CF 优选池: 周日 11:00 (北京时间) / 手动触发 / 线上数据缺失或超过 8 天时刷新
+# 数据文件不提交到仓库, 每次运行先从已发布的 Pages 取回上一版,
+# 再刷新, 刷新失败则沿用旧文件, 避免部署时把订阅文件清掉。
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  actions: write   # 仅用于重新启用本工作流, 防止 60 天无活动被停用
+
+concurrency:
+  group: pages-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Keep schedule alive (best effort)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/refresh.yml/enable" || true
+
+      - name: Restore previous data from Pages
+        env:
+          PAGES_URL: ${{ vars.PAGES_URL }}
+        run: |
+          base="${PAGES_URL:-https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}}"
+          for f in edge_pool.json sub.txt clash.yaml openvpn.yaml openvpn.json; do
+            if curl -fsS --retry 2 --max-time 30 -o "$f" "$base/$f"; then
+              echo "已恢复: $f"
+            else
+              rm -f "$f"; echo "无旧文件: $f"
+            fi
+          done
+
+      - name: Extract OpenVPN nodes
+        id: ovpn
+        continue-on-error: true
+        env:
+          OVPN_CHECK_TIMEOUT: "5"
+          OVPN_WORKERS: "32"
+        run: python refresh_ovpn.py
+
+      - name: Decide whether to refresh edge pool
+        id: need_pool
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          from datetime import datetime, timezone, timedelta
+          now = datetime.now(timezone.utc)
+          age_h = None
+          try:
+              d = json.load(open("edge_pool.json", encoding="utf-8"))
+              t = datetime.strptime(d["updated_at"], "%Y-%m-%d %H:%M").replace(tzinfo=timezone(timedelta(hours=8)))
+              age_h = (now - t).total_seconds() / 3600
+          except Exception:
+              pass
+          manual = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+          sunday_slot = now.weekday() == 6 and now.hour == 3   # 周日 11:00-11:59 北京时间
+          run = manual or age_h is None or age_h > 8 * 24 or (sunday_slot and age_h > 20)
+          print("run=" + ("true" if run else "false"))
+          PY
+
+      - name: Refresh edge pool
+        id: pool
+        if: steps.need_pool.outputs.run == 'true'
+        continue-on-error: true
+        env:
+          EDT_DOMAIN: ${{ secrets.EDT_DOMAIN }}
+          EDT_UUID: ${{ secrets.EDT_UUID }}
+          POOL_SIZE: "40"
+          SAMPLE_SIZE: "300"
+        run: python refresh_pool.py
+
+      - name: Prepare site
+        run: |
+          mkdir -p site
+          for f in edge_pool.json sub.txt clash.yaml openvpn.yaml openvpn.json; do
+            [ -f "$f" ] && cp "$f" site/ && echo "已加入: $f"
+          done
+          [ -f web/index.html ] && cp web/index.html site/index.html && echo "已加入: index.html"
+          exit 0
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'site'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      # 部署完成后再报错, 让失败可见但不阻断发布
+      - name: Fail if a refresh step failed
+        if: steps.ovpn.outcome == 'failure' || steps.pool.outcome == 'failure'
+        run: |
+          echo "ovpn=${{ steps.ovpn.outcome }} pool=${{ steps.pool.outcome }}"
+          exit 1
