@@ -89,8 +89,8 @@ jobs:
         env:
           EDT_DOMAIN: ${{ secrets.EDT_DOMAIN }}
           EDT_UUID: ${{ secrets.EDT_UUID }}
-          POOL_SIZE: "40"
-          SAMPLE_SIZE: "300"
+          POOL_SIZE: "50"
+          SAMPLE_SIZE: "350"
         run: python refresh_pool.py
 
       - name: Prepare site
